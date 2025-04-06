@@ -331,3 +331,159 @@ sudo systemctl restart nginx.service
 
 > 以上的操作搭建起来的janus服务器只限于在局域网内运行。如果想将WebRTC服务器搭建在公网环境中，那么还需要配置STUN服务器。这部分我暂时还未研究，后续再更新
 
+
+
+---------------------------------
+
+2025.4.3 更新
+
+## Coturn服务器安装配置
+
+- 安装依赖
+
+  ```bash
+  sudo apt-get install libssl-dev libevent-dev libpq-dev mysql-client libmysqlclient-dev libhiredis-dev git
+  ```
+
+- 安装Coturn
+
+  ```bash
+  git clone https://github.com/coturn/coturn
+  cd coturn
+  ./configure
+  make && sudo make install
+  ```
+
+- 修改配置文件
+
+  配置文件在 `/usr/local/etc/turnserver.conf` 下
+
+  生成用户凭证：
+
+  ```
+  turnadmin -k -u <用户名> -r shanghai -p <密码>
+  ```
+
+  - 将 <用户名> 替换为你想要设置的用户名。
+  - 将 <密码> 替换为你想要设置的密码。
+  - -r shanghai 指定了 realm（域），这里示例是 "shanghai"。
+  - -k 表示生成 key (即 MD5 哈希)。
+
+  **一定要把md5码记录下来，下面需要用到的**
+
+- 生成证书
+
+  ```bash
+  sudo openssl req -x509 -newkey rsa:2048 -keyout /etc/turn_server_pkey.pem -out /etc/turn_server_cert.pem -days 99999 -nodes
+  ```
+
+- 修改配置文件
+
+  ```bash
+  sudo vim /etc/turnuserdb.conf
+  ```
+
+  在这个配置文件中填入如下的信息：
+
+  ```ini
+  listening-device=eth0  # 用 ifconfig查看
+  
+  relay-device=eth0
+  
+  listening-ip=192.168.9.51  # 内网
+  
+  listening-port=3478
+  
+  tls-listening-port=5349
+  
+  relay-ip=192.168.9.51  # 内网
+  
+  external-ip=xxx.xxx.xxx.xxx  # 替换为你实际的公网IP
+  
+  relay-threads=50
+  
+  lt-cred-mech
+  
+  user=<用户名>:<MD5>  # 比如你前面用的用户名为123，那么填的时候的样子为usr=123:0xdd665365f336d257b3845ea8b6d929e8
+  
+  userdb=/etc/turnuserdb.conf
+  
+  cert=/etc/turn_server_cert.pem
+  
+  pkey=/etc/turn_server_pkey.pem
+  
+  pidfile="/var/run/turnserver.pid" 
+  ```
+
+- 运行Cotrun服务器
+
+  ```bash
+  turnserver -c /etc/turnserver.conf -X xxx.xxx.xxx.xxx
+  ```
+  `xxx.xxx.xxx.xxx` 为公网IP
+
+- 修改janus配置文件信息
+
+  ```bash
+  sudo vim /opt/janus/etc/janus/janus.jcfg
+  ```
+
+  ```ini
+  nat: {
+          // --- STUN Configuration ---
+          // Janus can use your Coturn server for STUN requests
+          // to help clients discover their public IP address.
+          stun_server = "xxx.xxx.xxx.xxx"   // 公网
+          stun_port = 3478
+  
+          // --- Optional Settings ---
+          // nice_debug = true           // Uncomment for detailed ICE/libnice debugging in Janus logs
+          // ice_lite = false            // Janus is typically a full ICE agent
+          // ice_tcp = true              // Enable ICE-TCP candidates (often useful)
+  
+          // --- TURN Configuration ---
+          // Janus will provide these TURN credentials to clients
+          // so they can relay media through your Coturn server if needed.
+          turn_server = "120.xx.xx.xxx"
+          turn_port = 3478 
+          turn_type = "udp"
+  
+          // !!! IMPORTANT !!!
+          // Use the *actual username* and *original password* you created
+          // with the 'turnadmin' command earlier.
+          // Do NOT use the MD5 hash here. Janus needs the plain password
+          // to authenticate with the TURN server on behalf of the client.
+          turn_user = "your_turn_username"
+          turn_pwd = "your_turn_password"
+  
+          // turn_realm = "shanghai"     // Uncomment and set if you specified a realm with turnadmin
+                                         // and your Coturn server enforces it (usually optional unless configured)
+  
+          full_trickle = true         // Enable Trickle ICE for faster connection setup
+  }
+  ```
+
+  **需要替换的关键信息：**
+
+  1. **stun_server**: 设置为你的公网 IP
+  2. **stun_port**: 设置为 Coturn 监听的 STUN 端口，通常是 3478。
+  3. **turn_server**: 设置为你的公网 IP
+  4. **turn_port**: 设置为 Coturn 监听的 TURN 端口，通常是 3478。
+  5. **turn_type**: 通常设置为 "udp"。
+  6. **turn_user**: **极其重要**，这里要填写你之前使用 turnadmin -u <用户名> ... 命令时设置的**用户名** (例如，如果你用了 liming，就填 "liming")。
+  7. **turn_pwd**: **极其重要**，这里要填写你之前使用 turnadmin ... -p <密码> 命令时设置的**原始密码**，**不是** turnuserdb.conf 文件里的那个 MD5 哈希值。Janus 需要用这个原始密码去向 Coturn 服务器认证。
+
+  **请务必将 your_turn_username 和 your_turn_password 替换为你实际创建 Coturn 用户时使用的用户名和密码。**
+
+- 重启janus服务器
+
+  ```bash
+  /opt/janus/etc/janus/
+  ```
+
+
+
+如果你的前面搭建janus的步骤是在公网服务器上进行的。那么再通过Coturn服务器的搭建，你的janus服务器中所有的Demo就可以运行在公网环境下了。全球各地所有用户通过 `https://xxx.xx.xx.xxx` 就能访问到你的janus服务器，且你们都可以随意进行通话了
+
+
+
